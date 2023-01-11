@@ -1,0 +1,328 @@
+OpenSSL and Tips and Tricks
+===========================
+
+// :imagesdir: images/
+// 
+// // note: this option should make listings do auto-wrapping instead of scrollbars, but it seems to not work in gitlab atm
+// :prewrap:
+
+++++
+<br>
+++++
+
+Examine Cert Chain of a Website
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+----
+sh$  openssl s_client -connect <server-url>:<port> -showcerts
+----
+
+IMPORTANT: Never prefix URL with schema like `https://`.
+
+TIP: Works also for other protocols besides https like ldaps.
+
+==== Example
+
+.Call
+----
+sh$  openssl s_client -connect google.de:443 -showcerts
+----
+
+.Answer
+----
+CONNECTED(000001BC)
+---
+Certificate chain
+ 0 s:CN = *.google.de
+   i:C = US, O = Google Trust Services LLC, CN = GTS CA 1C3
+-----BEGIN CERTIFICATE-----
+MIIEjTCCA3WgAwIBAgIQPTSIs85CuNkKrtVAw6aVTzANBgkqhkiG9w0BAQsFADBG
+[...]
+Zxrlht3YuaEgNGTlo/9PN5w=
+-----END CERTIFICATE-----
+ 1 s:C = US, O = Google Trust Services LLC, CN = GTS CA 1C3
+   i:C = US, O = Google Trust Services LLC, CN = GTS Root R1
+-----BEGIN CERTIFICATE-----
+MIIFljCCA36gAwIBAgINAgO8U1lrNMcY9QFQZjANBgkqhkiG9w0BAQsFADBHMQsw
+[...]
+1IXNDw9bg1kWRxYtnCQ6yICmJhSFm/Y3m6xv+cXDBlHz4n/FsRC6UfTd
+-----END CERTIFICATE-----
+ 2 s:C = US, O = Google Trust Services LLC, CN = GTS Root R1
+   i:C = BE, O = GlobalSign nv-sa, OU = Root CA, CN = GlobalSign Root CA
+-----BEGIN CERTIFICATE-----
+MIIFYjCCBEqgAwIBAgIQd70NbNs2+RrqIQ/E8FjTDTANBgkqhkiG9w0BAQsFADBX
+[...]
+d0lIKO2d1xozclOzgjXPYovJJIultzkMu34qQb9Sz/yilrbCgj8=
+-----END CERTIFICATE-----
+---
+Server certificate
+subject=CN = *.google.de
+
+issuer=C = US, O = Google Trust Services LLC, CN = GTS CA 1C3
+
+---
+No client certificate CA names sent
+Peer signing digest: SHA256
+Peer signature type: ECDSA
+Server Temp Key: X25519, 253 bits
+---
+SSL handshake has read 4301 bytes and written 391 bytes
+Verification: OK
+---
+New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+Server public key is 256 bit
+Secure Renegotiation IS NOT supported
+Compression: NONE
+Expansion: NONE
+No ALPN negotiated
+Early data was not sent
+Verify return code: 0 (ok)
+---
+----
+
+++++
+<br>
+++++
+
+
+Number and Order of Certs in a Combined Chain File
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+----
+sh$  openssl crl2pkcs7 -nocrl -certfile <cert-chain-file.pem> | openssl pkcs7 -print_certs -noout
+----
+
+Returns a list of two lines pairs, one for each certificate found in the file.
+`subject=` self describes the certificate while `issuer=` is a reference to
+the parent certificate. 
+
+TIP: For root Certificate `subject` and `issuer` are identical, for all other
+  certificates (intermeds, leafs, ...) they must be different.
+
+IMPORTANT: Depending on the software involved a badly sorted chain can
+  result in ssl verification errors, so be careful to always order
+  certs properly in the chain file always starting with the server / endnode
+  cert (final leaf) at the top of the file and going downwards from parent
+  to parent.
+
+IMPORTANT: Another possible source for ssl verification problems can be
+  duplicate certs in the chain, so also avoid that.
+
+IMPORTANT: The final root cert of the chain should never be part of the
+  cert chain file of a server. The whole point of PKI infrastructure is
+  that the client must have this file already and trust them.
+
+==== Examples
+
+.Good Answer
+----
+subject=CN = foo.example.com
+issuer=DC = com, DC = example, CN = INTERMED-CA-01
+
+subject=DC = com, DC = example, CN = INTERMED-CA-01
+issuer=DC = com, DC = example, CN = ROOT-CA
+----
+
+.Bad Answer: Certs not correctly ordered
+----
+subject=CN = foo.example.com
+issuer=DC = com, DC = example, CN = INTERMED-CA-01
+
+subject=DC = com, DC = example, CN = ROOT-CA
+issuer=DC = com, DC = example, CN = ROOT-CA
+
+# BAD: this should be the 2nd cert in chain
+subject=DC = com, DC = example, CN = INTERMED-CA-01
+issuer=DC = com, DC = example, CN = ROOT-CA
+----
+
+.Bad Answer: File contains duplicate certs
+----
+subject=CN = foo.example.com
+issuer=DC = com, DC = example, CN = INTERMED-CA-01
+
+subject=DC = com, DC = example, CN = INTERMED-CA-01
+issuer=DC = com, DC = example, CN = ROOT-CA
+
+# BAD: above cert is duplicated
+subject=DC = com, DC = example, CN = INTERMED-CA-01
+issuer=DC = com, DC = example, CN = ROOT-CA
+
+subject=DC = com, DC = example, CN = ROOT-CA
+issuer=DC = com, DC = example, CN = ROOT-CA
+----
+
+.Bad Answer: File contains root cert
+----
+subject=CN = foo.example.com
+issuer=DC = com, DC = example, CN = INTERMED-CA-01
+
+subject=DC = com, DC = example, CN = INTERMED-CA-01
+issuer=DC = com, DC = example, CN = ROOT-CA
+
+# BAD: server chain file contains root cert
+subject=DC = com, DC = example, CN = ROOT-CA
+issuer=DC = com, DC = example, CN = ROOT-CA
+----
+
+++++
+<br>
+++++
+
+
+(Test) Cert Verification Process
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Normally in production mode ssl verification is handled by some
+application specific library (java, python, etc.) but for debugging
+purposes one can also check a given chain "manually" using openssl
+directly.
+
+----
+sh$  openssl verify -verbose -CAfile <(cat <intermed-01.pem> <root.pem>) <cert_srv_leaf.pem>
+----
+
+NOTE: In the internetz one can find multiple different variants of this
+  command which seemingly work for other people in other situations.
+  The only one working for me is the variant above where the 'cert.pem'
+  file to test can only contain the final server leaf cert
+  (no intermediates!) and all parent certs (root plus all intermeds)
+  must be chained into and given as `-CAfile` parameter
+
+==== Examples
+
+.Good Answer
+----
+cert_single.pem: OK
+----
+
+.Bad Answer
+----
+DC = com, DC = example, CN = INTERMED-01
+error 2 at 1 depth lookup: unable to get issuer certificate
+error cert_single.pem: verification failed
+----
+
+++++
+<br>
+++++
+
+
+Check if a private key belongs / matches a specific cert (file)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You have a cert file and a private key file, but you are not
+100% sure that the belong together. This can be tested by
+getting a checksum for each of the files which than must be
+identical.
+
+----
+sh$  openssl x509 -noout -modulus -in <cert-file.pem> | openssl md5
+sh$  openssl rsa -noout -modulus -in <private-key-file.pem> | openssl md5
+----
+
+==== Examples
+
+.Good Answer: Checksums match
+----
+sh$  openssl x509 -noout -modulus -in <cert-file.pem> | openssl md5
+d76c75bc61944846fd055ddb94c21374
+
+sh$  openssl rsa -noout -modulus -in <private-key-file.pem> | openssl md5
+d76c75bc61944846fd055ddb94c21374
+----
+
+.Bad Answer: Checksums differ
+----
+sh$  openssl x509 -noout -modulus -in <cert-file.pem> | openssl md5
+d76c75bc61944846fd055ddb94c21374
+
+sh$  openssl rsa -noout -modulus -in <private-key-file.pem> | openssl md5
+1cf02b7f5965ab2bf7f25ed318bb36c8
+----
+
+++++
+<br>
+++++
+
+
+Check if root cert is trusted by OS
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+==== redhat linux systems
+
+----
+sh$  trust list --filter=ca-anchors
+----
+
+++++
+<br>
+++++
+
+
+Managing OS trust
+~~~~~~~~~~~~~~~~~
+
+==== redhat linux systems
+https://www.redhat.com/sysadmin/configure-ca-trust-list
+
+
+++++
+<br>
+++++
+
+
+Managing Java Trust (Java KeyStores)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Additional use cases not mentioned here can be found at:
+  * https://www.sslshopper.com/article-most-common-java-keytool-keystore-commands.html
+
+
+Checking if cert is contained in Java Keystore
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+----
+sh$  keytool -list -v -storepass changeit -keystore <keystore-file>
+----
+
+Note that the unfiltered complete list can be quite overwhelming,
+so if you know some keywords like parts of the CN of the cert to
+look for try to filter it:
+
+----
+sh$  keytool -list -v -storepass changeit -keystore <keystore-file> | grep -i example
+----
+
+Even better when one is able to guess or knows the java internal
+cert alias, then one can do this:
+
+----
+sh$  keytool -list -v -storepass changeit -keystore <keystore-file> -alias <alias-name>
+----
+
+INFO: the password for the store (`-storepass`) depends obviously on
+  the details of the current system under inspection but when in
+  doubt it is more often than not literally "changeit".
+
+
+Adding custom root cert to Java Keystore
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+----
+sh$  keytool -import -trustcacerts -storepass changeit -alias <alias-name> -file <custom-root-cert-file> -keystore <ks-file>
+----
+
+
+++++
+<br>
+++++
+
+
+Sources:
+--------
+
+  * https://www.howtouselinux.com/post/certificate-chain
+  * https://stackoverflow.com/q/25482199
+  * https://www.ibm.com/support/pages/how-verify-if-private-key-matches-certificate
+
